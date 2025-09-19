@@ -1,10 +1,12 @@
 //! Version management and validation with improved error messages
 use super::{ConstraintType, VersionRequirements};
 use std::error::Error;
+use std::time::Duration;
 
 /// Validates version requirements before application startup
 pub async fn validate_version_requirements() -> Result<(), Box<dyn Error>> {
-    let requirements = match VersionRequirements::fetch().await {
+    // Try fetching requirements with retries
+    let requirements = match retry_fetch_requirements().await {
         Ok(requirements) => requirements,
         Err(e) => {
             handle_fetch_error(&e);
@@ -54,28 +56,40 @@ pub async fn validate_version_requirements() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Retry fetching version requirements with exactly 3 attempts
+async fn retry_fetch_requirements() -> Result<VersionRequirements, Box<dyn Error>> {
+    for attempt in 1..=3 {
+        match VersionRequirements::fetch().await {
+            Ok(requirements) => return Ok(requirements),
+            Err(e) => {
+                if attempt == 3 {
+                    return Err(e);
+                }
+                eprintln!("Version check failed (attempt {}/3), retrying in {} seconds...", 
+                    attempt, attempt * 2);
+                tokio::time::sleep(Duration::from_secs(attempt as u64 * 2)).await;
+            }
+        }
+    }
+    unreachable!()
+}
+
 /// Provides user-friendly error messages for fetch failures
 fn handle_fetch_error(error: &Box<dyn Error>) {
     let error_str = error.to_string();
     
-    eprintln!("❌ Unable to verify CLI version requirements\n");
+    eprintln!("❌ Unable to verify CLI version requirements after multiple attempts\n");
     
-    // Determine the type of error and provide specific guidance
     if error_str.contains("error sending request") || error_str.contains("Failed to fetch from all sources") {
-        eprintln!("This appears to be a network connectivity issue.\n");
-        eprintln!("Please check:");
-        eprintln!("  • Your internet connection is active");
-        eprintln!("  • You're not behind a restrictive firewall or proxy");
-        eprintln!("  • Your DNS settings are working correctly");
-        eprintln!("  • Your system date and time are correct\n");
-        
-        eprintln!("You can test connectivity by running:");
-        eprintln!("  curl -I https://cli.nexus.xyz/version.json\n");
-        
-        eprintln!("If you're behind a corporate firewall, you may need to:");
-        eprintln!("  • Configure proxy settings (HTTP_PROXY/HTTPS_PROXY)");
-        eprintln!("  • Use a VPN connection");
-        eprintln!("  • Contact your network administrator\n");
+        eprintln!("Network connectivity issue detected.\n");
+        eprintln!("Troubleshooting steps:");
+        eprintln!("1. Check your internet connection");
+        eprintln!("2. Verify these domains are accessible:");
+        eprintln!("   • cli.nexus.xyz");
+        eprintln!("   • raw.githubusercontent.com");
+        eprintln!("3. Try the following commands:");
+        eprintln!("   curl -v https://cli.nexus.xyz/version.json");
+        eprintln!("   ping cli.nexus.xyz\n");
     } else if error_str.contains("timeout") {
         eprintln!("The request timed out. This could indicate:");
         eprintln!("  • Slow or unstable internet connection");
